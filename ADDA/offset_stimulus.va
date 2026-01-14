@@ -1,5 +1,6 @@
-// SAR-based Flash ADC (Comparators) Offset Extractor with Parallel Analog Outputs
-// ref: https://ieeexplore.ieee.org/document/7050041   https://ieeexplore.ieee.org/document/5551648   https://zhuanlan.zhihu.com/p/711846301
+// Flash ADC (Comparators) Offset Extractor with Parallel Analog Outputs
+// SAR-based              Closed-Loop ref: https://ieeexplore.ieee.org/document/7050041   https://ieeexplore.ieee.org/document/5551648   https://zhuanlan.zhihu.com/p/711846301
+// DC Servo (sigma-delta) Closed-Loop ref: https://ieeexplore.ieee.org/document/1594475, todo
 `include "constants.vams"
 `include "disciplines.vams"
 
