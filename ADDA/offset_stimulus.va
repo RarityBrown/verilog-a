@@ -1,0 +1,131 @@
+// SAR-based Flash ADC (Comparators) Offset Extractor with Parallel Analog Outputs
+// ref: https://ieeexplore.ieee.org/document/7050041   https://ieeexplore.ieee.org/document/5551648   https://zhuanlan.zhihu.com/p/711846301
+`include "constants.vams"
+`include "disciplines.vams"
+
+`define MAX_BITS 6                        // Supports up to 6-bit Flash ADCs (63 Comparators)
+`define MAX_COMPS ((2 ** `MAX_BITS) - 1)  // 63 = 2^6 - 1
+
+module offset_stimulus (
+    input   adc_end,                      // ADC Output end of conversion signal, Comparator output valid signal
+    input   [`MAX_BITS-1:0] d,            // ADC Output Binary Digital Code
+    output  vinp, vinn,                   // Differential Stimulus Outputs to ADC Input
+    output  [`MAX_COMPS:1] v_off_out
+);  
+    electrical adc_end, vinp, vinn;
+    electrical [`MAX_BITS-1:0] d;
+    electrical [`MAX_COMPS:1] v_off_out;
+
+    // --- User Parameters ---
+    parameter integer N_BITS = 2;         // DUT ADC Resolution (e.g., 2, 5, 6)
+    parameter integer SAR_CYCLES = 8;     // Precision loop count
+    
+    // Electrical Specs
+    parameter real V_CM = 0.4;            // Common Mode
+    parameter real V_FS_DIFF = 1.5;       // Full Scale Diff Range (+/- 0.75V)
+    parameter real V_SEARCH_SPAN = 0.4;   // Max search range
+    
+    // Timing
+    parameter real T_RISE  = 10p;         // Output transition time
+    parameter real V_TH_LOGIC = 0.5;      // Digital threshold
+
+    // --- Internal State ---
+    integer num_comparators;
+    real    lsb_size;
+    
+    integer comp_idx;                     // Current Comparator Index
+    integer cycle_idx;                    // SAR loop index
+    
+    real    current_ideal_th;
+    real    current_v_diff;
+    real    current_step;
+    real    measured_offset;
+    
+    real    offset_memory [1:`MAX_COMPS];   // Array to store results for all comparators
+
+    integer adc_code_dec;
+    integer comp_is_high;
+    integer done_flag;
+    integer k_int;
+    genvar  k; 
+    
+    // Helper: Power of 2
+    analog function integer pow2;
+        input n;
+        integer n;
+        begin
+            pow2 = 1 << n;
+        end
+    endfunction
+
+    // --- Initialization ---
+    analog initial begin
+        if (N_BITS > `MAX_BITS) begin
+            $strobe("Error: N_BITS too high");
+        end
+
+        num_comparators = pow2(N_BITS) - 1;
+        lsb_size = V_FS_DIFF / pow2(N_BITS);
+        for (k_int = 1; k_int <= `MAX_COMPS; k_int = k_int + 1) begin
+            offset_memory[k_int] = 0.0;  // Initialize Memory
+        end
+
+        comp_idx = 1;
+        cycle_idx = 0;
+        done_flag = 0;
+
+        current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
+        current_v_diff = current_ideal_th; 
+        current_step   = V_SEARCH_SPAN / 4.0;
+    end
+
+
+    analog begin
+        // 1. Clock Trigger
+        @(cross(V(adc_end) - V_TH_LOGIC, +1)) begin
+            if (!done_flag) begin
+                adc_code_dec = 0;
+
+                // 2. Logic Update (SAR)
+                for (k = 0; k < N_BITS; k = k + 1) begin
+                    if (V(d[k]) > V_TH_LOGIC) begin
+                        adc_code_dec = adc_code_dec + (1 << k);
+                    end
+                end
+
+                // Determine Comparator State
+                comp_is_high = (adc_code_dec >= comp_idx) ? 1 : 0;
+
+                // SAR Update
+                if (comp_is_high)   current_v_diff = current_v_diff - current_step;
+                else                current_v_diff = current_v_diff + current_step;
+                current_step = current_step / 2.0;
+                cycle_idx = cycle_idx + 1;
+
+                // Check Completion
+                if (cycle_idx >= SAR_CYCLES) begin
+                    measured_offset = current_v_diff - current_ideal_th;
+                    offset_memory[comp_idx] = measured_offset;
+                    comp_idx = comp_idx + 1;
+                    cycle_idx = 0;
+                    if (comp_idx > num_comparators) begin
+                        done_flag = 1;
+                    end else begin
+                        current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
+                        current_v_diff   = current_ideal_th;
+                        current_step     = V_SEARCH_SPAN / 4.0;
+                    end
+                end
+            end
+        end
+
+        // 3. Drive Stimulus
+        V(vinp) <+ transition(V_CM + current_v_diff/2.0, 0, T_RISE);
+        V(vinn) <+ transition(V_CM - current_v_diff/2.0, 0, T_RISE);
+        for (k = 1; k <= `MAX_COMPS; k = k + 1) begin
+             V(v_off_out[k]) <+ transition( (k <= num_comparators) ? offset_memory[k] : 0.0, 0, T_RISE );
+        end
+
+    end
+
+endmodule
