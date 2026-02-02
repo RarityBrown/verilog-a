@@ -11,11 +11,15 @@ module offset_stimulus (
     input   adc_end,                      // ADC Output end of conversion signal, Comparator output valid signal
     input   [`MAX_BITS-1:0] d,            // ADC Output Binary Digital Code
     output  vinp, vinn,                   // Differential Stimulus Outputs to ADC Input
-    output  [`MAX_COMPS:1] v_off_out
+    output  [`MAX_COMPS:1] v_off_out,
+    output  max_offset_out,
+    input   vss
 );  
     electrical adc_end, vinp, vinn;
     electrical [`MAX_BITS-1:0] d;
     electrical [`MAX_COMPS:1] v_off_out;
+    electrical max_offset_out;
+    electrical vss;
 
     // --- User Parameters ---
     parameter integer N_BITS = 2;         // DUT ADC Resolution (e.g., 2, 5, 6)
@@ -29,6 +33,7 @@ module offset_stimulus (
     // Timing
     parameter real T_RISE  = 10p;         // Output transition time
     parameter real V_TH_LOGIC = 0.5;      // Digital threshold
+    parameter real T_START = 0n;          // Start Delay to skip initial transients with wire bond
 
     // --- Internal State ---
     integer num_comparators;
@@ -41,6 +46,7 @@ module offset_stimulus (
     real    current_v_diff;
     real    current_step;
     real    measured_offset;
+    real    max_offset_val;
     
     real    offset_memory [1:`MAX_COMPS];   // Array to store results for all comparators
 
@@ -74,6 +80,7 @@ module offset_stimulus (
         comp_idx = 1;
         cycle_idx = 0;
         done_flag = 0;
+        max_offset_val = 0.0;            // Initialize Max Offset
 
         current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
         current_v_diff = current_ideal_th; 
@@ -82,14 +89,14 @@ module offset_stimulus (
 
 
     analog begin
-        // 1. Clock Trigger
-        @(cross(V(adc_end) - V_TH_LOGIC, +1)) begin
-            if (!done_flag) begin
+        // 1. Clock Trigger (Referenced to VSS)
+        @(cross(V(adc_end, vss) - V_TH_LOGIC, +1)) begin
+            if ($abstime >= T_START && !done_flag) begin
                 adc_code_dec = 0;
 
-                // 2. Logic Update (SAR)
+                // 2. Logic Update (SAR) (Referenced to VSS)
                 for (k = 0; k < N_BITS; k = k + 1) begin
-                    if (V(d[k]) > V_TH_LOGIC) begin
+                    if (V(d[k], vss) > V_TH_LOGIC) begin
                         adc_code_dec = adc_code_dec + (1 << k);
                     end
                 end
@@ -107,6 +114,12 @@ module offset_stimulus (
                 if (cycle_idx >= SAR_CYCLES) begin
                     measured_offset = current_v_diff - current_ideal_th;
                     offset_memory[comp_idx] = measured_offset;
+                    
+                    // Update Max Offset (Absolute value)
+                    if (abs(measured_offset) > max_offset_val) begin
+                        max_offset_val = abs(measured_offset);
+                    end
+
                     comp_idx = comp_idx + 1;
                     cycle_idx = 0;
                     if (comp_idx > num_comparators) begin
@@ -120,12 +133,17 @@ module offset_stimulus (
             end
         end
 
-        // 3. Drive Stimulus
-        V(vinp) <+ transition(V_CM + current_v_diff/2.0, 0, T_RISE);
-        V(vinn) <+ transition(V_CM - current_v_diff/2.0, 0, T_RISE);
+        // 3. Drive Stimulus (Referenced to VSS)
+        V(vinp, vss) <+ transition(V_CM + current_v_diff/2.0, 0, T_RISE);
+        V(vinn, vss) <+ transition(V_CM - current_v_diff/2.0, 0, T_RISE);
+        
+        // Output Offsets (Excluded from VSS requirement, referenced to global 0)
         for (k = 1; k <= `MAX_COMPS; k = k + 1) begin
              V(v_off_out[k]) <+ transition( (k <= num_comparators) ? offset_memory[k] : 0.0, 0, T_RISE );
         end
+        
+        // Output Max Offset (Excluded from VSS requirement, referenced to global 0)
+        V(max_offset_out) <+ transition(max_offset_val, 0, T_RISE);
 
     end
 
