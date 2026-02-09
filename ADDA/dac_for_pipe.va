@@ -1,0 +1,70 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+module dac_for_pipe(bin, vout, vout_stg1, vout_stg2, vout_stg3);
+    input [16:0] bin; 
+    output vout;
+    output vout_stg1; 
+    output vout_stg2; 
+    output vout_stg3;
+    // first stage input referred
+  
+    electrical [16:0] bin;
+    electrical vout;
+    electrical vout_stg1;
+    electrical vout_stg2;
+    electrical vout_stg3;
+
+    parameter real vhigh = 1;   
+    parameter real vtrans = 0.5;      
+    parameter real tdelay = 0;   
+    parameter real trise = 1p;     
+    parameter real tfall = 1p;
+    parameter real vfs = 1.5;
+
+    real temp, temp_stg1, temp_stg2, temp_stg3;
+    real out_temp, out_stg1, out_stg2, out_stg3;
+
+    analog begin
+        temp = 0;
+        temp_stg1 = 0;
+        temp_stg2 = 0;
+        temp_stg3 = 0;
+
+        // Stage 3
+        temp_stg3 = temp_stg3 + ((V(bin[0]) > vtrans) ? 0.5 : -0.5);
+        temp_stg3 = temp_stg3 + ((V(bin[1]) > vtrans) ? 1.0 : -1.0);
+        temp_stg3 = temp_stg3 + ((V(bin[2]) > vtrans) ? 2.0 : -2.0);
+        temp_stg3 = temp_stg3 + ((V(bin[3]) > vtrans) ? 4.0 : -4.0);
+        temp_stg3 = temp_stg3 + ((V(bin[4]) > vtrans) ? 8.0 : -8.0);
+        temp_stg3 = temp_stg3 + ((V(bin[5]) > vtrans) ? 16.0 : -16.0);
+        temp_stg3 = temp_stg3 + ((V(bin[6]) > vtrans) ? 32.0 : -32.0);
+        temp_stg3 = temp_stg3 + ((V(bin[7]) > vtrans) ? 64.0 : -64.0);      // redundancy
+        temp_stg3 = temp_stg3 + ((V(bin[8]) > vtrans) ? 128.0 : -128.0);    // redundancy
+
+        // Stage 2
+        temp_stg2 = temp_stg2 + ((V(bin[9]) > vtrans) ? 64.0 : -64.0);
+        temp_stg2 = temp_stg2 + ((V(bin[10]) > vtrans) ? 128.0 : -128.0);
+        temp_stg2 = temp_stg2 + ((V(bin[11]) > vtrans) ? 256.0 : -256.0);
+        temp_stg2 = temp_stg2 + ((V(bin[12]) > vtrans) ? 512.0 : -512.0);   // redundancy
+
+        // Stage 1
+        temp_stg1 = temp_stg1 + ((V(bin[13]) > vtrans) ? 512.0 : -512.0);
+        temp_stg1 = temp_stg1 + ((V(bin[14]) > vtrans) ? 1024.0 : -1024.0);
+        temp_stg1 = temp_stg1 + ((V(bin[15]) > vtrans) ? 2048.0 : -2048.0);
+        temp_stg1 = temp_stg1 + ((V(bin[16]) > vtrans) ? 4096.0 : -4096.0);
+
+        // sum
+        temp = temp_stg1 + temp_stg2 + temp_stg3;
+
+        out_temp = vfs * temp / 16384.0;
+        out_stg1 = vfs * temp_stg1 / 16384.0;
+        out_stg2 = vfs * temp_stg2 / 16384.0;
+        out_stg3 = vfs * temp_stg3 / 16384.0;
+        V(vout)      <+ transition(out_temp, tdelay, trise, tfall);
+        V(vout_stg1) <+ transition(out_stg1, tdelay, trise, tfall);
+        V(vout_stg2) <+ transition(out_stg2, tdelay, trise, tfall);
+        V(vout_stg3) <+ transition(out_stg3, tdelay, trise, tfall);
+    end
+
+endmodule
