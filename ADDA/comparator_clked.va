@@ -1,0 +1,106 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+module strongarm_comparator (VINP, VINN, CLK, AVDD, AVSS, VOUTP, VOUTN);
+    input VINP, VINN, CLK;
+    inout AVDD, AVSS;
+    output VOUTP, VOUTN;
+    electrical VINP, VINN, CLK, AVDD, AVSS, VOUTP, VOUTN;
+
+    parameter real vth_clk = 0.6;
+    parameter real t_base  = 50p;
+    parameter real t_max   = 1n;
+    parameter real tr      = 20p;
+    parameter real rout    = 100.0;
+    parameter real ttol    = 1p;
+    parameter real vtol    = 1m;
+
+    parameter integer en_metastability = 0;
+
+    parameter real vos       = 0.0;
+    parameter real noise_rms = 0.0;
+    parameter real tau       = 15p;
+    parameter integer seed   = 251;
+
+    integer state;
+    integer current_seed;
+
+    real state_p, state_n;
+    real vtrans_p, vtrans_n;
+    real vout_actual_p, vout_actual_n;
+    
+    real current_td;
+    real eff_diff_v;
+    real abs_diff_v;
+    real pwr_range;
+
+    analog begin
+        @(initial_step) begin
+            current_seed = seed;
+            current_td = t_base;
+            
+            if (V(CLK) > vth_clk) begin
+                if (V(VINP) - V(VINN) + vos >= 0.0)
+                    state = 1;
+                else
+                    state = -1;
+            end else begin
+                state = 0;
+            end
+        end
+
+        @(cross(V(CLK) - vth_clk, +1, ttol, vtol)) begin
+            eff_diff_v = V(VINP) - V(VINN) + vos + $rdist_normal(current_seed, 0.0, 1.0) * noise_rms;
+
+            if (eff_diff_v >= 0.0) begin
+                state = 1;
+            end else begin
+                state = -1;
+            end
+
+            if (en_metastability == 1) begin
+                abs_diff_v = $abs(eff_diff_v);
+                pwr_range = V(AVDD) - V(AVSS);
+                
+                if (pwr_range < 1e-9) pwr_range = 1e-9;
+                
+                if (abs_diff_v < 1e-9) begin
+                    abs_diff_v = 1e-9; 
+                end else if (abs_diff_v > pwr_range) begin
+                    abs_diff_v = pwr_range;
+                end
+                
+                current_td = t_base + tau * $ln(pwr_range / abs_diff_v);
+                
+                if (current_td > t_max) current_td = t_max;
+            end else begin
+                current_td = t_base;
+            end
+        end
+
+        @(cross(V(CLK) - vth_clk, -1, ttol, vtol)) begin
+            state = 0;
+            current_td = t_base;
+        end
+
+        if (state == 0) begin
+            state_p = 1.0; 
+            state_n = 1.0;
+        end else if (state == 1) begin
+            state_p = 1.0; 
+            state_n = 0.0;
+        end else begin
+            state_p = 0.0;
+            state_n = 1.0;
+        end
+
+        vtrans_p = transition(state_p, current_td, tr, tr);
+        vtrans_n = transition(state_n, current_td, tr, tr);
+        
+        vout_actual_p = V(AVSS) + vtrans_p * (V(AVDD) - V(AVSS));
+        vout_actual_n = V(AVSS) + vtrans_n * (V(AVDD) - V(AVSS));
+        
+        I(VOUTP) <+ (V(VOUTP) - vout_actual_p) / rout;
+        I(VOUTN) <+ (V(VOUTN) - vout_actual_n) / rout;
+    end
+endmodule
