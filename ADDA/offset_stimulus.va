@@ -116,8 +116,8 @@ module offset_stimulus (
                     offset_memory[comp_idx] = measured_offset;
                     
                     // Update Max Offset (Absolute value)
-                    if (abs(measured_offset) > max_offset_val) begin
-                        max_offset_val = abs(measured_offset);
+                    if (abs(measured_offset) > abs(max_offset_val)) begin
+                        max_offset_val = measured_offset;
                     end
 
                     comp_idx = comp_idx + 1;
