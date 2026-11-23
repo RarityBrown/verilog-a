@@ -1,0 +1,28 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+module counter_5b(clk, rst, out);
+    input clk, rst;
+    output [4:0] out;
+    electrical clk, rst;
+    electrical [4:0] out;
+
+    parameter real vdd = 1;
+    parameter real vth = 0.5;
+    parameter real tr  = 12p;
+
+    integer count;
+    genvar i;
+
+    analog begin
+        @(initial_step) count = 0;
+        @(cross(V(rst) - vth, +1)) count = 0;
+
+        @(cross(V(clk) - vth, +1))
+            count = (V(rst) > vth) ? 0 : (count + 1) & 31;
+
+        for (i = 0; i < 5; i = i + 1) begin : gen_out
+            V(out[i]) <+ transition(((count >> i) & 1) ? vdd : 0.0, 0, tr, tr);
+        end
+    end
+endmodule
