@@ -9,13 +9,14 @@
 
 module offset_stimulus (
     input   adc_end,                      // ADC Output end of conversion signal, Comparator output valid signal
+    input   ext_clk,                      // External clock to trigger next comparator (tie to vss if unused)
     input   [`MAX_BITS-1:0] d,            // ADC Output Binary Digital Code
     output  vinp, vinn,                   // Differential Stimulus Outputs to ADC Input
     output  [`MAX_COMPS:1] v_off_out,
     output  max_offset_out,
     input   vss
 );  
-    electrical adc_end, vinp, vinn;
+    electrical adc_end, ext_clk, vinp, vinn;
     electrical [`MAX_BITS-1:0] d;
     electrical [`MAX_COMPS:1] v_off_out;
     electrical max_offset_out;
@@ -24,6 +25,7 @@ module offset_stimulus (
     // --- User Parameters ---
     parameter integer N_BITS = 2;         // DUT ADC Resolution (e.g., 2, 5, 6)
     parameter integer SAR_CYCLES = 8;     // Precision loop count
+    parameter integer EXT_TRIG_EN = 0;    // 0: Auto-advance after SAR_CYCLES, 1: Wait for ext_clk rising edge
     
     // Electrical Specs
     parameter real V_CM = 0.4;            // Common Mode
@@ -41,6 +43,8 @@ module offset_stimulus (
     
     integer comp_idx;                     // Current Comparator Index
     integer cycle_idx;                    // SAR loop index
+    integer wait_next_comp;               // Wait flag for external comparator trigger
+    integer skip_cnt;                     // Counter for skipped adc_end cycle after switching
     
     real    current_ideal_th;
     real    current_v_diff;
@@ -80,6 +84,8 @@ module offset_stimulus (
         comp_idx = 1;
         cycle_idx = 0;
         done_flag = 0;
+        wait_next_comp = 0;
+        skip_cnt = 0;
         max_offset_val = 0.0;            // Initialize Max Offset
 
         current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
@@ -91,45 +97,69 @@ module offset_stimulus (
     analog begin
         // 1. Clock Trigger (Referenced to VSS)
         @(cross(V(adc_end, vss) - V_TH_LOGIC, +1)) begin
-            if ($abstime >= T_START && !done_flag) begin
-                adc_code_dec = 0;
+            if ($abstime >= T_START && !done_flag && !wait_next_comp) begin
+                if (skip_cnt > 0) begin
+                    // Discard the first adc_end pulse after ext_clk switch; keep vinp/vinn unchanged
+                    skip_cnt = skip_cnt - 1;
+                end else begin
+                    adc_code_dec = 0;
 
-                // 2. Logic Update (SAR) (Referenced to VSS)
-                for (k = 0; k < N_BITS; k = k + 1) begin
-                    if (V(d[k], vss) > V_TH_LOGIC) begin
-                        adc_code_dec = adc_code_dec + (1 << k);
+                    // 2. Logic Update (SAR) (Referenced to VSS)
+                    for (k = 0; k < N_BITS; k = k + 1) begin
+                        if (V(d[k], vss) > V_TH_LOGIC) begin
+                            adc_code_dec = adc_code_dec + (1 << k);
+                        end
+                    end
+
+                    // Determine Comparator State
+                    comp_is_high = (adc_code_dec >= comp_idx) ? 1 : 0;
+
+                    // SAR Update
+                    if (comp_is_high)   current_v_diff = current_v_diff - current_step;
+                    else                current_v_diff = current_v_diff + current_step;
+                    current_step = current_step / 2.0;
+                    cycle_idx = cycle_idx + 1;
+
+                    // Check Completion
+                    if (cycle_idx >= SAR_CYCLES) begin
+                        measured_offset = current_v_diff - current_ideal_th;
+                        offset_memory[comp_idx] = measured_offset;
+                        
+                        // Update Max Offset (Absolute value)
+                        if (abs(measured_offset) > abs(max_offset_val)) begin
+                            max_offset_val = measured_offset;
+                        end
+
+                        if (comp_idx >= num_comparators) begin
+                            comp_idx = comp_idx + 1;
+                            done_flag = 1;
+                        end else if (EXT_TRIG_EN) begin
+                            // Hold current state and wait for external clock trigger
+                            wait_next_comp = 1;
+                        end else begin
+                            // Auto-advance to next comparator
+                            comp_idx = comp_idx + 1;
+                            cycle_idx = 0;
+                            current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
+                            current_v_diff   = current_ideal_th;
+                            current_step     = V_SEARCH_SPAN / 4.0;
+                        end
                     end
                 end
+            end
+        end
 
-                // Determine Comparator State
-                comp_is_high = (adc_code_dec >= comp_idx) ? 1 : 0;
+        // External Clock Trigger to Advance to Next Comparator (Referenced to VSS)
+        @(cross(V(ext_clk, vss) - V_TH_LOGIC, +1)) begin
+            if (EXT_TRIG_EN && $abstime >= T_START && !done_flag && wait_next_comp) begin
+                comp_idx = comp_idx + 1;
+                cycle_idx = 0;
+                skip_cnt = 1;
+                wait_next_comp = 0;
 
-                // SAR Update
-                if (comp_is_high)   current_v_diff = current_v_diff - current_step;
-                else                current_v_diff = current_v_diff + current_step;
-                current_step = current_step / 2.0;
-                cycle_idx = cycle_idx + 1;
-
-                // Check Completion
-                if (cycle_idx >= SAR_CYCLES) begin
-                    measured_offset = current_v_diff - current_ideal_th;
-                    offset_memory[comp_idx] = measured_offset;
-                    
-                    // Update Max Offset (Absolute value)
-                    if (abs(measured_offset) > abs(max_offset_val)) begin
-                        max_offset_val = measured_offset;
-                    end
-
-                    comp_idx = comp_idx + 1;
-                    cycle_idx = 0;
-                    if (comp_idx > num_comparators) begin
-                        done_flag = 1;
-                    end else begin
-                        current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
-                        current_v_diff   = current_ideal_th;
-                        current_step     = V_SEARCH_SPAN / 4.0;
-                    end
-                end
+                current_ideal_th = -(V_FS_DIFF / 2.0) + (comp_idx * lsb_size);
+                current_v_diff   = current_ideal_th;
+                current_step     = V_SEARCH_SPAN / 4.0;
             end
         end
 
